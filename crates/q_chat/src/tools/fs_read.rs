@@ -1,4 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{
+    HashMap,
+    VecDeque,
+};
 use std::fs::Metadata;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -30,6 +33,11 @@ use super::{
     format_path,
     sanitize_path_tool_arg,
 };
+use crate::util::images::{
+    handle_images_from_paths,
+    is_supported_image_type,
+    pre_process,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "mode")]
@@ -37,6 +45,7 @@ pub enum FsRead {
     Line(FsLine),
     Directory(FsDirectory),
     Search(FsSearch),
+    Image(FsImage),
 }
 
 impl FsRead {
@@ -45,6 +54,7 @@ impl FsRead {
             FsRead::Line(fs_line) => fs_line.validate(ctx).await,
             FsRead::Directory(fs_directory) => fs_directory.validate(ctx).await,
             FsRead::Search(fs_search) => fs_search.validate(ctx).await,
+            FsRead::Image(fs_image) => fs_image.validate(ctx).await,
         }
     }
 
@@ -53,6 +63,7 @@ impl FsRead {
             FsRead::Line(fs_line) => fs_line.queue_description(ctx, updates).await,
             FsRead::Directory(fs_directory) => fs_directory.queue_description(updates),
             FsRead::Search(fs_search) => fs_search.queue_description(updates),
+            FsRead::Image(fs_image) => fs_image.queue_description(updates),
         }
     }
 
@@ -61,7 +72,55 @@ impl FsRead {
             FsRead::Line(fs_line) => fs_line.invoke(ctx, updates).await,
             FsRead::Directory(fs_directory) => fs_directory.invoke(ctx, updates).await,
             FsRead::Search(fs_search) => fs_search.invoke(ctx, updates).await,
+            FsRead::Image(fs_image) => fs_image.invoke(ctx, updates).await,
         }
+    }
+}
+
+/// Read images from given paths.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FsImage {
+    pub image_paths: Vec<String>,
+}
+
+impl FsImage {
+    pub async fn validate(&mut self, ctx: &Context) -> Result<()> {
+        for path in &self.image_paths {
+            let path = sanitize_path_tool_arg(ctx, path);
+            if let Some(path) = path.to_str() {
+                let processed_path = pre_process(path);
+                if !is_supported_image_type(&processed_path) {
+                    bail!("'{}' does not exist", &processed_path);
+                }
+                let is_file = ctx.fs().symlink_metadata(&processed_path).await?.is_file();
+                if !is_file {
+                    bail!("'{}' is not a file", &processed_path);
+                }
+            } else {
+                bail!("Unable to parse path");
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn invoke(&self, _ctx: &Context, updates: &mut impl Write) -> Result<InvokeOutput> {
+        let valid_images = handle_images_from_paths(updates, &self.image_paths);
+        let mut key_value_map = HashMap::new();
+        key_value_map.insert("images".to_string(), valid_images.clone());
+        Ok(InvokeOutput {
+            output: OutputKind::Json(serde_json::to_value(&key_value_map)?),
+        })
+    }
+
+    pub fn queue_description(&self, updates: &mut impl Write) -> Result<()> {
+        queue!(
+            updates,
+            style::Print("Reading images: \n"),
+            style::SetForegroundColor(Color::Green),
+            style::Print(&self.image_paths.join("\n")),
+            style::ResetColor,
+        )?;
+        Ok(())
     }
 }
 

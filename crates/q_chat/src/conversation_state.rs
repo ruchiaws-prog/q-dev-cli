@@ -8,6 +8,7 @@ use fig_api_client::model::{
     AssistantResponseMessage,
     ChatMessage,
     ConversationState as FigConversationState,
+    ImageBlock,
     Tool,
     ToolInputSchema,
     ToolResult,
@@ -202,6 +203,25 @@ impl ConversationState {
         self.next_message = Some(msg);
     }
 
+    #[allow(dead_code)]
+    /// Use this once we support image extraction directly from the user input
+    pub async fn set_next_user_message_with_images(&mut self, input: String, images: Vec<ImageBlock>) {
+        debug_assert!(self.next_message.is_none(), "next_message should not exist");
+        if let Some(next_message) = self.next_message.as_ref() {
+            warn!(?next_message, "next_message should not exist");
+        }
+
+        let input = if input.is_empty() {
+            warn!("input must not be empty when adding new messages");
+            "Empty prompt".to_string()
+        } else {
+            input
+        };
+
+        let msg = UserMessage::new_prompt_with_images(input, images);
+        self.next_message = Some(msg);
+    }
+
     /// Sets the response message according to the currently set [Self::next_message].
     pub fn push_assistant_message(&mut self, message: AssistantMessage) {
         debug_assert!(self.next_message.is_some(), "next_message should exist");
@@ -290,6 +310,11 @@ impl ConversationState {
     pub fn add_tool_results(&mut self, tool_results: Vec<ToolUseResult>) {
         debug_assert!(self.next_message.is_none());
         self.next_message = Some(UserMessage::new_tool_use_results(tool_results));
+    }
+
+    pub fn add_tool_results_with_images(&mut self, tool_results: Vec<ToolUseResult>, images: Vec<ImageBlock>) {
+        debug_assert!(self.next_message.is_none());
+        self.next_message = Some(UserMessage::new_tool_use_results_with_images(tool_results, images));
     }
 
     /// Sets the next user message with "cancelled" tool results.
@@ -413,6 +438,7 @@ impl ConversationState {
             content: summary_content,
             user_input_message_context: None,
             user_intent: None,
+            images: None,
         };
 
         // If the last message contains tool uses, then add cancelled tool results to the summary
