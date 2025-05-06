@@ -18,10 +18,12 @@ use serde::{
 };
 use tracing::debug;
 
+use super::consts::CONTEXT_FILES_MAX_SIZE;
 use super::hooks::{
     Hook,
     HookExecutor,
 };
+use super::util::drop_matched_context_files;
 use crate::platform::Context;
 use crate::util::directories;
 
@@ -44,6 +46,8 @@ pub struct ContextConfig {
 pub struct ContextManager {
     ctx: Arc<Context>,
 
+    max_context_files_size: usize,
+
     /// Global context configuration that applies to all profiles.
     pub global_config: ContextConfig,
 
@@ -65,9 +69,16 @@ impl ContextManager {
     /// 2. Load the global configuration
     /// 3. Load the default profile configuration
     ///
+    /// # Arguments
+    /// * `ctx` - The context to use
+    /// * `max_context_files_size` - Optional maximum token size for context files. If not provided,
+    ///   defaults to `CONTEXT_FILES_MAX_SIZE`.
+    ///
     /// # Returns
     /// A Result containing the new ContextManager or an error
-    pub async fn new(ctx: Arc<Context>) -> Result<Self> {
+    pub async fn new(ctx: Arc<Context>, max_context_files_size: Option<usize>) -> Result<Self> {
+        let max_context_files_size = max_context_files_size.unwrap_or(CONTEXT_FILES_MAX_SIZE);
+
         let profiles_dir = directories::chat_profiles_dir(&ctx)?;
 
         ctx.fs().create_dir_all(&profiles_dir).await?;
@@ -78,6 +89,7 @@ impl ContextManager {
 
         Ok(Self {
             ctx,
+            max_context_files_size,
             global_config,
             current_profile,
             profile_config,
@@ -425,17 +437,15 @@ impl ContextManager {
     /// 3. Reads the content of each file
     /// 4. Returns a vector of (filename, content) pairs
     ///
-    /// # Arguments
-    /// * `force` - If true, include paths that don't exist yet
     ///
     /// # Returns
     /// A Result containing a vector of (filename, content) pairs or an error
-    pub async fn get_context_files(&self, force: bool) -> Result<Vec<(String, String)>> {
+    pub async fn get_context_files(&self) -> Result<Vec<(String, String)>> {
         let mut context_files = Vec::new();
 
-        self.collect_context_files(&self.global_config.paths, &mut context_files, force)
+        self.collect_context_files(&self.global_config.paths, &mut context_files)
             .await?;
-        self.collect_context_files(&self.profile_config.paths, &mut context_files, force)
+        self.collect_context_files(&self.profile_config.paths, &mut context_files)
             .await?;
 
         context_files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -451,34 +461,42 @@ impl ContextManager {
     }
 
     /// Get all context files from the global configuration.
-    pub async fn get_global_context_files(&self, force: bool) -> Result<Vec<(String, String)>> {
+    pub async fn get_global_context_files(&self) -> Result<Vec<(String, String)>> {
         let mut context_files = Vec::new();
 
-        self.collect_context_files(&self.global_config.paths, &mut context_files, force)
+        self.collect_context_files(&self.global_config.paths, &mut context_files)
             .await?;
 
         Ok(context_files)
     }
 
     /// Get all context files from the current profile configuration.
-    pub async fn get_current_profile_context_files(&self, force: bool) -> Result<Vec<(String, String)>> {
+    pub async fn get_current_profile_context_files(&self) -> Result<Vec<(String, String)>> {
         let mut context_files = Vec::new();
 
-        self.collect_context_files(&self.profile_config.paths, &mut context_files, force)
+        self.collect_context_files(&self.profile_config.paths, &mut context_files)
             .await?;
 
         Ok(context_files)
     }
 
-    async fn collect_context_files(
-        &self,
-        paths: &[String],
-        context_files: &mut Vec<(String, String)>,
-        force: bool,
-    ) -> Result<()> {
+    /// Collects context files and optionally drops files if the total size exceeds the limit.
+    /// Returns (files_to_use, dropped_files)
+    pub async fn collect_context_files_with_limit(&self) -> Result<(Vec<(String, String)>, Vec<(String, String)>)> {
+        let mut files = self.get_context_files().await?;
+
+        let dropped_files = drop_matched_context_files(&mut files, self.max_context_files_size).unwrap_or_default();
+
+        // remove dropped files from files
+        files.retain(|file| !dropped_files.iter().any(|dropped| dropped.0 == file.0));
+
+        Ok((files, dropped_files))
+    }
+
+    async fn collect_context_files(&self, paths: &[String], context_files: &mut Vec<(String, String)>) -> Result<()> {
         for path in paths {
             // Use is_validation=false to handle non-matching globs gracefully
-            process_path(&self.ctx, path, context_files, force, false).await?;
+            process_path(&self.ctx, path, context_files, false, false).await?;
         }
         Ok(())
     }
@@ -796,9 +814,10 @@ mod tests {
     use super::*;
 
     // Helper function to create a test ContextManager with Context
-    pub async fn create_test_context_manager() -> Result<ContextManager> {
+    pub async fn create_test_context_manager(context_file_size: Option<usize>) -> Result<ContextManager> {
+        let context_file_size = context_file_size.unwrap_or(CONTEXT_FILES_MAX_SIZE);
         let ctx = Context::builder().with_test_home().await.unwrap().build_fake();
-        let manager = ContextManager::new(ctx).await?;
+        let manager = ContextManager::new(ctx, Some(context_file_size)).await?;
         Ok(manager)
     }
 
@@ -823,7 +842,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_profile_ops() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
+        let mut manager = create_test_context_manager(None).await?;
         let ctx = Arc::clone(&manager.ctx);
 
         assert_eq!(manager.current_profile, "default");
@@ -860,10 +879,44 @@ mod tests {
         Ok(())
     }
 
+    // #[tokio::test]
+    // async fn test_collect_within_limit() {
+    //     let manager = setup_mock_manager_with_files(vec![
+    //         ("a.txt".to_string(), "aaa".to_string()),
+    //         ("b.txt".to_string(), "bbb".to_string()),
+    //     ], 100);
+
+    //     let (used, dropped) = manager.collect_context_files_with_limit().await.unwrap();
+
+    //     assert_eq!(used.len(), 2);
+    //     assert!(dropped.is_empty());
+    // }
+
+    #[tokio::test]
+    async fn test_collect_exceeds_limit() -> Result<()> {
+        let mut manager = create_test_context_manager(Some(2)).await?;
+        let ctx: Arc<Context> = Arc::clone(&manager.ctx);
+
+        ctx.fs().create_dir_all("test").await?;
+        ctx.fs().write("test/to-include.md", "ha").await?;
+        ctx.fs()
+            .write("test/to-drop.md", "long content that exceed limit")
+            .await?;
+        manager.add_paths(vec!["test/*.md".to_string()], false, false).await?;
+
+        let (used, dropped) = manager.collect_context_files_with_limit().await.unwrap();
+
+        assert!(used.len() + dropped.len() == 2);
+        assert!(used.len() == 1);
+        assert!(dropped.len() == 1);
+        assert!(!dropped.is_empty());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_path_ops() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
-        let ctx = Arc::clone(&manager.ctx);
+        let mut manager = create_test_context_manager(None).await?;
+        let ctx: Arc<Context> = Arc::clone(&manager.ctx);
 
         // Create some test files for matching.
         ctx.fs().create_dir_all("test").await?;
@@ -871,17 +924,12 @@ mod tests {
         ctx.fs().write("test/p2.md", "p2").await?;
 
         assert!(
-            manager.get_context_files(false).await?.is_empty(),
+            manager.get_context_files().await?.is_empty(),
             "no files should be returned for an empty profile when force is false"
-        );
-        assert_eq!(
-            manager.get_context_files(true).await?.len(),
-            2,
-            "default non-glob global files should be included when force is true"
         );
 
         manager.add_paths(vec!["test/*.md".to_string()], false, false).await?;
-        let files = manager.get_context_files(false).await?;
+        let files = manager.get_context_files().await?;
         assert!(files[0].0.ends_with("p1.md"));
         assert_eq!(files[0].1, "p1");
         assert!(files[1].0.ends_with("p2.md"));
@@ -900,7 +948,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_hook() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
+        let mut manager = create_test_context_manager(None).await?;
         let hook = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
 
         // Test adding hook to profile config
@@ -919,7 +967,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_hook() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
+        let mut manager = create_test_context_manager(None).await?;
         let hook = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
 
         manager.add_hook("test_hook".to_string(), hook, false).await?;
@@ -936,7 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_hook_disabled() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
+        let mut manager = create_test_context_manager(None).await?;
         let hook = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
 
         manager.add_hook("test_hook".to_string(), hook, false).await?;
@@ -957,7 +1005,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_set_all_hooks_disabled() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
+        let mut manager = create_test_context_manager(None).await?;
         let hook1 = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
         let hook2 = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
 
@@ -977,7 +1025,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_hooks() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
+        let mut manager = create_test_context_manager(None).await?;
         let hook1 = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
         let hook2 = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
 
@@ -993,7 +1041,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hooks_across_profiles() -> Result<()> {
-        let mut manager = create_test_context_manager().await?;
+        let mut manager = create_test_context_manager(None).await?;
         let hook1 = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
         let hook2 = Hook::new_inline_hook(HookTrigger::ConversationStart, "echo test".to_string());
 
