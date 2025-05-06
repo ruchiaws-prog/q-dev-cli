@@ -160,6 +160,7 @@ use tool_manager::{
 };
 use tools::gh_issue::GhIssueContext;
 use tools::{
+    OutputKind,
     QueuedTool,
     Tool,
     ToolPermissions,
@@ -173,6 +174,7 @@ use tracing::{
     warn,
 };
 use unicode_width::UnicodeWidthStr;
+use util::images::RichImageBlock;
 use util::{
     animate_output,
     play_notification_bell,
@@ -1368,14 +1370,6 @@ impl ChatContext {
                 // Otherwise continue with normal chat on 'n' or other responses
                 self.tool_use_status = ToolUseStatus::Idle;
 
-                if pending_tool_index.is_some() {
-                    self.conversation_state.abandon_tool_use(tool_uses, user_input);
-                } else {
-                    self.conversation_state.set_next_user_message(user_input).await;
-                }
-
-                let conv_state = self.conversation_state.as_sendable_conversation_state(true).await;
-
                 if self.interactive {
                     queue!(self.output, style::SetForegroundColor(Color::Magenta))?;
                     queue!(self.output, style::SetForegroundColor(Color::Reset))?;
@@ -1384,6 +1378,13 @@ impl ChatContext {
                     self.spinner = Some(Spinner::new(Spinners::Dots, "Thinking...".to_owned()));
                 }
 
+                if pending_tool_index.is_some() {
+                    self.conversation_state.abandon_tool_use(tool_uses, user_input);
+                } else {
+                    self.conversation_state.set_next_user_message(user_input).await;
+                }
+
+                let conv_state = self.conversation_state.as_sendable_conversation_state(true).await;
                 self.send_tool_use_telemetry().await;
 
                 ChatState::HandleResponseStream(self.client.send_message(conv_state).await?)
@@ -2758,6 +2759,7 @@ impl ChatContext {
 
         // Execute the requested tools.
         let mut tool_results = vec![];
+        let mut image_blocks: Vec<RichImageBlock> = Vec::new();
 
         for tool in tool_uses {
             let mut tool_telemetry = self.tool_use_telemetry_events.entry(tool.id.clone());
@@ -2788,6 +2790,33 @@ impl ChatContext {
 
             match invoke_result {
                 Ok(result) => {
+                    match result.output {
+                        OutputKind::Text(ref text) => {
+                            debug!("Output is Text: {}", text);
+                        },
+                        OutputKind::Json(ref json) => {
+                            if let Some(json_arr) = json.as_object() {
+                                if let Some(json_arr) = json_arr.get("images") {
+                                    if let Some(json_arr) = json_arr.as_array() {
+                                        for data in json_arr {
+                                            if let Some(rich_image_block_arr) = data.as_array() {
+                                                let image_block_obj = &rich_image_block_arr[0];
+                                                let image_metadata_obj = &rich_image_block_arr[1];
+
+                                                let image_block = serde_json::from_value(image_block_obj.clone())
+                                                    .expect("block must match ImageBlock");
+                                                let image_metadata = serde_json::from_value(image_metadata_obj.clone())
+                                                    .expect("metadata must match ImageMetadata");
+
+                                                image_blocks.push((image_block, image_metadata));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+
                     debug!("tool result output: {:#?}", result);
                     execute!(
                         self.output,
@@ -2807,7 +2836,11 @@ impl ChatContext {
                     }
                     tool_results.push(ToolUseResult {
                         tool_use_id: tool.id,
-                        content: vec![result.into()],
+                        content: if image_blocks.is_empty() {
+                            vec![result.into()]
+                        } else {
+                            vec![]
+                        },
                         status: ToolResultStatus::Success,
                     });
                 },
@@ -2847,7 +2880,13 @@ impl ChatContext {
             }
         }
 
-        self.conversation_state.add_tool_results(tool_results);
+        if !image_blocks.is_empty() {
+            let images = image_blocks.into_iter().map(|(block, _)| block).collect();
+            self.conversation_state
+                .add_tool_results_with_images(tool_results, images);
+        } else {
+            self.conversation_state.add_tool_results(tool_results);
+        }
 
         self.send_tool_use_telemetry().await;
         return Ok(ChatState::HandleResponseStream(

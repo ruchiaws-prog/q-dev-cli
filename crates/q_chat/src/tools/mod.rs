@@ -318,7 +318,7 @@ pub fn document_to_serde_value(value: Document) -> serde_json::Value {
 ///
 /// Required since path arguments are defined by the model.
 #[allow(dead_code)]
-fn sanitize_path_tool_arg(ctx: &Context, path: impl AsRef<Path>) -> PathBuf {
+pub fn sanitize_path_tool_arg(ctx: &Context, path: impl AsRef<Path>) -> PathBuf {
     let mut res = PathBuf::new();
     // Expand `~` only if it is the first part.
     let mut path = path.as_ref().components();
