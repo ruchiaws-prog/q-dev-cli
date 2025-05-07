@@ -1572,6 +1572,9 @@ impl ChatContext {
                 if let Some(context_manager) = &mut self.conversation_state.context_manager {
                     match subcommand {
                         command::ContextSubcommand::Show { expand } => {
+                            fn map_chat_error(e: ErrReport) -> ChatError {
+                                ChatError::Custom(e.to_string().into())
+                            }
                             // Display global context
                             execute!(
                                 self.output,
@@ -1611,6 +1614,28 @@ impl ChatContext {
                                 }
                             }
 
+                            if expand {
+                                queue!(
+                                    self.output,
+                                    style::SetAttribute(Attribute::Bold),
+                                    style::SetForegroundColor(Color::DarkYellow),
+                                    style::Print("\n    🔧 Hooks:\n")
+                                )?;
+                                Self::print_hook_section(
+                                    &mut self.output,
+                                    &context_manager.global_config.hooks,
+                                    HookTrigger::ConversationStart,
+                                )
+                                .map_err(map_chat_error)?;
+
+                                Self::print_hook_section(
+                                    &mut self.output,
+                                    &context_manager.global_config.hooks,
+                                    HookTrigger::PerPrompt,
+                                )
+                                .map_err(map_chat_error)?;
+                            }
+
                             // Display profile context
                             execute!(
                                 self.output,
@@ -1647,6 +1672,28 @@ impl ChatContext {
                                     }
                                     execute!(self.output, style::Print("\n"))?;
                                 }
+                                execute!(self.output, style::Print("\n"))?;
+                            }
+
+                            if expand {
+                                queue!(
+                                    self.output,
+                                    style::SetAttribute(Attribute::Bold),
+                                    style::SetForegroundColor(Color::DarkYellow),
+                                    style::Print("    🔧 Hooks:\n")
+                                )?;
+                                Self::print_hook_section(
+                                    &mut self.output,
+                                    &context_manager.profile_config.hooks,
+                                    HookTrigger::ConversationStart,
+                                )
+                                .map_err(map_chat_error)?;
+                                Self::print_hook_section(
+                                    &mut self.output,
+                                    &context_manager.profile_config.hooks,
+                                    HookTrigger::PerPrompt,
+                                )
+                                .map_err(map_chat_error)?;
                                 execute!(self.output, style::Print("\n"))?;
                             }
 
@@ -1726,6 +1773,39 @@ impl ChatContext {
                                     self.output,
                                     style::Print(format!("\nTotal: ~{} tokens\n\n", total_tokens)),
                                 )?;
+
+                                // Show last cached conversation summary if available, otherwise regenerate it
+                                if expand {
+                                    if let Some(summary) =
+                                        self.conversation_state.latest_summary().map(|s| s.to_owned())
+                                    {
+                                        let border = "═".repeat(self.terminal_width().min(80));
+                                        execute!(
+                                            self.output,
+                                            style::Print("\n"),
+                                            style::SetForegroundColor(Color::Cyan),
+                                            style::Print(&border),
+                                            style::Print("\n"),
+                                            style::SetAttribute(Attribute::Bold),
+                                            style::Print("                       CONVERSATION SUMMARY"),
+                                            style::Print("\n"),
+                                            style::Print(&border),
+                                            style::SetAttribute(Attribute::Reset),
+                                            style::Print("\n\n"),
+                                            style::Print(&summary),
+                                            style::Print("\n\n")
+                                        )?;
+                                    } else {
+                                        self.compact_history(
+                                            Some(tool_uses.clone()),
+                                            pending_tool_index,
+                                            None,
+                                            true,
+                                            false,
+                                        )
+                                        .await?;
+                                    }
+                                }
 
                                 execute!(self.output, style::Print("\n"))?;
                             }
@@ -1978,48 +2058,6 @@ impl ChatContext {
                                     },
                                 }
                             } else {
-                                fn print_hook_section(
-                                    output: &mut impl Write,
-                                    hooks: &HashMap<String, Hook>,
-                                    trigger: HookTrigger,
-                                ) -> Result<()> {
-                                    let section = match trigger {
-                                        HookTrigger::ConversationStart => "Conversation Start",
-                                        HookTrigger::PerPrompt => "Per Prompt",
-                                    };
-                                    let hooks: Vec<(&String, &Hook)> =
-                                        hooks.iter().filter(|(_, h)| h.trigger == trigger).collect();
-
-                                    queue!(
-                                        output,
-                                        style::SetForegroundColor(Color::Cyan),
-                                        style::Print(format!("    {section}:\n")),
-                                        style::SetForegroundColor(Color::Reset),
-                                    )?;
-
-                                    if hooks.is_empty() {
-                                        queue!(
-                                            output,
-                                            style::SetForegroundColor(Color::DarkGrey),
-                                            style::Print("      <none>\n"),
-                                            style::SetForegroundColor(Color::Reset)
-                                        )?;
-                                    } else {
-                                        for (name, hook) in hooks {
-                                            if hook.disabled {
-                                                queue!(
-                                                    output,
-                                                    style::SetForegroundColor(Color::DarkGrey),
-                                                    style::Print(format!("      {} (disabled)\n", name)),
-                                                    style::SetForegroundColor(Color::Reset)
-                                                )?;
-                                            } else {
-                                                queue!(output, style::Print(format!("      {}\n", name)),)?;
-                                            }
-                                        }
-                                    }
-                                    Ok(())
-                                }
                                 queue!(
                                     self.output,
                                     style::SetAttribute(Attribute::Bold),
@@ -2028,13 +2066,13 @@ impl ChatContext {
                                     style::SetAttribute(Attribute::Reset),
                                 )?;
 
-                                print_hook_section(
+                                Self::print_hook_section(
                                     &mut self.output,
                                     &context_manager.global_config.hooks,
                                     HookTrigger::ConversationStart,
                                 )
                                 .map_err(map_chat_error)?;
-                                print_hook_section(
+                                Self::print_hook_section(
                                     &mut self.output,
                                     &context_manager.global_config.hooks,
                                     HookTrigger::PerPrompt,
@@ -2049,13 +2087,13 @@ impl ChatContext {
                                     style::SetAttribute(Attribute::Reset),
                                 )?;
 
-                                print_hook_section(
+                                Self::print_hook_section(
                                     &mut self.output,
                                     &context_manager.profile_config.hooks,
                                     HookTrigger::ConversationStart,
                                 )
                                 .map_err(map_chat_error)?;
-                                print_hook_section(
+                                Self::print_hook_section(
                                     &mut self.output,
                                     &context_manager.profile_config.hooks,
                                     HookTrigger::PerPrompt,
@@ -2630,6 +2668,45 @@ impl ChatContext {
                 }
             },
         })
+    }
+
+    // Prints hook configuration grouped by trigger: conversation sesiion start or per user message
+    fn print_hook_section(output: &mut impl Write, hooks: &HashMap<String, Hook>, trigger: HookTrigger) -> Result<()> {
+        let section = match trigger {
+            HookTrigger::ConversationStart => "On Session Start",
+            HookTrigger::PerPrompt => "Per User Message",
+        };
+        let hooks: Vec<(&String, &Hook)> = hooks.iter().filter(|(_, h)| h.trigger == trigger).collect();
+
+        queue!(
+            output,
+            style::SetForegroundColor(Color::Cyan),
+            style::Print(format!("    {section}:\n")),
+            style::SetForegroundColor(Color::Reset),
+        )?;
+
+        if hooks.is_empty() {
+            queue!(
+                output,
+                style::SetForegroundColor(Color::DarkGrey),
+                style::Print("      <none>\n"),
+                style::SetForegroundColor(Color::Reset)
+            )?;
+        } else {
+            for (name, hook) in hooks {
+                if hook.disabled {
+                    queue!(
+                        output,
+                        style::SetForegroundColor(Color::DarkGrey),
+                        style::Print(format!("      {} (disabled)\n", name)),
+                        style::SetForegroundColor(Color::Reset)
+                    )?;
+                } else {
+                    queue!(output, style::Print(format!("      {}\n", name)),)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn tool_use_execute(&mut self, mut tool_uses: Vec<QueuedTool>) -> Result<ChatState, ChatError> {
