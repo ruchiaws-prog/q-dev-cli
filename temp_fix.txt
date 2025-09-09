@@ -1,0 +1,3 @@
+#!/bin/bash
+# This is a temporary script to fix the typo
+sed -i 's/overral/overall/g' /workspace/crates/chat-cli/src/cli/chat/mod.rs
