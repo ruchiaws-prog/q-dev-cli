@@ -196,6 +196,9 @@ pub enum CliRootCommands {
     /// Inline shell completions
     #[command(subcommand)]
     Inline(inline::InlineSubcommand),
+    /// Manage the desktop app
+    #[command(subcommand)]
+    App(app::AppSubcommand),
 }
 
 impl CliRootCommands {
@@ -229,6 +232,7 @@ impl CliRootCommands {
             CliRootCommands::Dashboard => "dashboard",
             CliRootCommands::Chat { .. } => "chat",
             CliRootCommands::Inline(_) => "inline",
+            CliRootCommands::App(_) => "app",
         }
     }
 }
@@ -339,6 +343,7 @@ impl Cli {
                 CliRootCommands::Dashboard => launch_dashboard(false).await,
                 CliRootCommands::Chat { args } => Self::execute_chat(Some(args)).await,
                 CliRootCommands::Inline(subcommand) => subcommand.execute(&cli_context).await,
+                CliRootCommands::App(subcommand) => subcommand.execute().await,
             },
             // Root command
             None => Self::execute_chat(None).await,
