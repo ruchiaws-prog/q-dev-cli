@@ -1,0 +1,11 @@
+#!/bin/bash
+# Script to fix typos using sed
+
+# Fix "overral" to "overall" in chat mod.rs
+sed -i 's/overral/overall/g' /workspace/crates/chat-cli/src/cli/chat/mod.rs
+
+# Fix "accidently" to "accidentally" in telemetry files
+sed -i 's/accidently/accidentally/g' /workspace/crates/chat-cli/src/telemetry/util.rs
+sed -i 's/accidently/accidentally/g' /workspace/crates/fig_telemetry/src/util.rs
+
+echo "Typos fixed successfully"
