@@ -3,6 +3,7 @@
 pub mod app;
 mod completion;
 mod debug;
+mod demo;
 mod diagnostics;
 mod doctor;
 mod feed;
@@ -152,6 +153,8 @@ pub enum CliRootCommands {
     User(user::UserSubcommand),
     /// Fix and diagnose common issues
     Doctor(doctor::DoctorArgs),
+    /// Interactive demo of Amazon Q CLI features
+    Demo(demo::DemoArgs),
     /// Generate CLI completion spec
     #[command(hide = true)]
     Completion(completion::CompletionArgs),
@@ -217,6 +220,7 @@ impl CliRootCommands {
             CliRootCommands::RootUser(RootUserSubcommand::Profile) => "profile",
             CliRootCommands::User(_) => "user",
             CliRootCommands::Doctor(_) => "doctor",
+            CliRootCommands::Demo(_) => "demo",
             CliRootCommands::Completion(_) => "completion",
             CliRootCommands::Internal(_) => "internal",
             CliRootCommands::Launch => "launch",
@@ -241,6 +245,7 @@ const HELP_TEXT: &str = color_print::cstr! {"
 ╭────────────────────────────────────────────────────╮
 │ <em>chat</em>         <black!>Chat with Amazon Q</black!>                    │
 │ <em>translate</em>    <black!>Natural Language to Shell translation</black!> │
+│ <em>demo</em>         <black!>Interactive demo of CLI features</black!>       │
 │ <em>doctor</em>       <black!>Debug installation issues</black!>             │ 
 │ <em>settings</em>     <black!>Customize appearance & behavior</black!>       │
 │ <em>quit</em>         <black!>Quit the app</black!>                          │
@@ -319,6 +324,7 @@ impl Cli {
                 CliRootCommands::User(user) => user.execute().await,
                 CliRootCommands::RootUser(root_user) => root_user.execute().await,
                 CliRootCommands::Doctor(args) => args.execute().await,
+                CliRootCommands::Demo(args) => args.execute(&cli_context).await,
                 CliRootCommands::Hook(hook_subcommand) => hook_subcommand.execute().await,
                 CliRootCommands::Theme(theme_args) => theme_args.execute().await,
                 CliRootCommands::Settings(settings_args) => settings_args.execute(&cli_context).await,
@@ -651,6 +657,35 @@ mod test {
             CliRootCommands::Doctor(doctor::DoctorArgs {
                 all: true,
                 strict: true,
+            })
+        );
+    }
+
+    #[test]
+    fn test_demo() {
+        use crate::cli::demo::{DemoArgs, DemoFeature};
+        
+        assert_parse!(
+            ["demo"],
+            CliRootCommands::Demo(DemoArgs {
+                auto: false,
+                feature: None,
+            })
+        );
+        
+        assert_parse!(
+            ["demo", "--auto"],
+            CliRootCommands::Demo(DemoArgs {
+                auto: true,
+                feature: None,
+            })
+        );
+        
+        assert_parse!(
+            ["demo", "--feature", "chat"],
+            CliRootCommands::Demo(DemoArgs {
+                auto: false,
+                feature: Some(DemoFeature::Chat),
             })
         );
     }
