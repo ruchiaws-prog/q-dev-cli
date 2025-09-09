@@ -78,11 +78,11 @@ cat <<EOF
 
   ${BOLD}${UNDERLINE}Amazon Q's onboarding was quit${NORMAL}
   
-  You can redo this onboarding any time. Just run ${BOLD}${MAGENTA}fig onboarding${NORMAL}
+  You can redo this onboarding any time. Just run ${BOLD}${MAGENTA}q app onboarding${NORMAL}
    
 
-  Have an issue? Run ${BOLD}${MAGENTA}fig doctor${NORMAL}
-  Have feedback? Email ${UNDERLINE}hello@fig.io${NORMAL}
+  Have an issue? Run ${BOLD}${MAGENTA}q doctor${NORMAL}
+  Have feedback? Visit ${UNDERLINE}https://github.com/aws/amazon-q-developer-cli${NORMAL}
 
 
 EOF
